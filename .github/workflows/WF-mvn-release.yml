@@ -37,7 +37,7 @@ on:
 # - MAVEN_CENTRAL_USER_USERNAME: Maven Central username for publishing artifacts
 # - MAVEN_CENTRAL_USER_PASSWORD: Maven Central password for publishing artifacts
 jobs:
-  deploy-snapshot:
+  deploy-release:
 
     runs-on: ubuntu-latest
 

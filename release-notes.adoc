@@ -1,0 +1,15 @@
+= Release notes
+
+== 0.2.0
+
+* new workflows:
+** WF-mvn-docs.yml
+* Fix WF-mvn-release.yml job name
+
+== 0.1.0
+
+* Project creation
+* new workflows:
+** WF-mvn-compile.yml
+** WF-mvn-deploy-SNAPSHOT.yml
+** WF-mvn-release.yml
