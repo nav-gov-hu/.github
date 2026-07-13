@@ -20,7 +20,7 @@ on:
 # - TECHUSER_EMAIL: Git email for git commands
 # - TECHUSER_GH_TOKEN: GitHub token for GitHub API commands
 jobs:
-  deploy-release:
+  rc-finalize:
 
     runs-on: ubuntu-latest
 

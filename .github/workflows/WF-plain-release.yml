@@ -26,7 +26,7 @@ on:
 # - TECHUSER_EMAIL: Git email for git commands
 # - TECHUSER_GH_TOKEN: GitHub token for GitHub API commands
 jobs:
-  deploy-release:
+  plain-release:
 
     runs-on: ubuntu-latest
 
