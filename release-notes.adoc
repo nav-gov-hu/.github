@@ -4,6 +4,8 @@
 
 * new workflows:
 ** WF-mvn-docs.yml
+** WF-plain-rc-finalize.yml
+** WF-plain-rc-release.yml
 * Fix WF-mvn-release.yml job name
 * update components:
 ** actions/checkout: v4 -> v7 (all workflows)

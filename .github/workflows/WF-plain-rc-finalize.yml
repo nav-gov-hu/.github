@@ -1,0 +1,163 @@
+# Finalizes an RC line into a release branch and prepares the release branch for bugfix development.
+name: (WF-plain) RC Finalize
+
+on:
+  workflow_call:
+    inputs:
+      comment:
+        required: false
+        type: string
+        default: 'Finalize RC release from WEB UI'
+        description: 'Comment for release finalization'
+
+# Prerequisites for variables:
+# Set secrets in the repository or organization settings:
+# - TECHUSER_GPG_KEY_ID: GPG key ID for git commands
+# - TECHUSER_GPG_PRIVATE_KEY: GPG private key for signing commits
+# - TECHUSER_GPG_KEY_PASSPHRASE: GPG key passphrase
+# - TECHUSER_SSH_PRIVATE_KEY: SSH private key for git commands
+# - TECHUSER_USERNAME: Git username for git commands
+# - TECHUSER_EMAIL: Git email for git commands
+# - TECHUSER_GH_TOKEN: GitHub token for GitHub API commands
+jobs:
+  deploy-release:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print
+        shell: bash
+        run: |
+          echo "github.event.inputs.comment: '${{ github.event.inputs.comment }}'"
+          echo "github.ref_name: '${{ github.ref_name }}'"
+          echo "github.event.ref: '${{ github.event.ref }}'"
+          echo "github.repository: '${{ github.repository }}'"
+          echo "github.workspace: '${{ github.workspace }}'"
+          echo "secrets.TECHUSER_GPG_KEY_ID: '${{ secrets.TECHUSER_GPG_KEY_ID }}'"
+          echo "secrets.TECHUSER_GPG_PRIVATE_KEY: '${{ secrets.TECHUSER_GPG_PRIVATE_KEY }}'"
+          echo "secrets.TECHUSER_GPG_KEY_PASSPHRASE: '${{ secrets.TECHUSER_GPG_KEY_PASSPHRASE }}'"
+          echo "secrets.TECHUSER_SSH_PRIVATE_KEY: '${{ secrets.TECHUSER_SSH_PRIVATE_KEY }}'"
+          echo "secrets.TECHUSER_USERNAME: '${{ secrets.TECHUSER_USERNAME }}'"
+          echo "secrets.TECHUSER_EMAIL: '${{ secrets.TECHUSER_EMAIL }}'"
+          echo "secrets.TECHUSER_GH_TOKEN: '${{ secrets.TECHUSER_GH_TOKEN }}'"
+
+      - name: Check branch (workflow can run only on rc/* branches)
+        id: precheck
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_name }}" == rc/* ]]; then
+            echo "🚀 Start RC finalization on '${{ github.ref_name }}'"
+          else
+            echo "⛔ RC finalization can only be run on an rc/* branch!"
+            exit 1
+          fi
+
+      - name: Import GPG key
+        shell: bash
+        run: |
+          # GPG private key exported with armor (start: '-----BEGIN PGP PRIVATE KEY BLOCK-----')
+          # The whole content should be base64 encoded when stored as secret
+          echo "${{ secrets.TECHUSER_GPG_PRIVATE_KEY }}" | base64 --decode | gpg --batch --import
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          # Private SSH key in PEM format (start with: '-----BEGIN RSA PRIVATE KEY-----')
+          key: ${{ secrets.TECHUSER_SSH_PRIVATE_KEY }}
+          name: id_rsa
+          known_hosts: unnecessary
+
+      - name: Configure GIT for signed commit
+        shell: bash
+        run: |
+          git config --global user.name "${{ secrets.TECHUSER_USERNAME }}"
+          git config --global user.email "${{ secrets.TECHUSER_EMAIL }}"
+          git config --global user.signingkey "${{ secrets.TECHUSER_GPG_KEY_ID }}"
+          git config --global commit.gpgsign true
+          git config --global tag.gpgSign true
+
+      - name: Checkout ${{ github.ref_name }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ github.ref_name }}
+
+      - name: Prepare final release from RC branch
+        id: prepare
+        shell: bash
+        run: |
+          RAW_VERSION=$(sed -rn 's/^[#[:space:]]*VERSION=([^[:space:]]+)[[:space:]]*$/\1/p' .env | head -n 1)
+          if [[ -z "$RAW_VERSION" ]]; then
+            echo "⛔ VERSION property not found in .env"
+            exit 1
+          fi
+
+          RELEASE_VERSION=""
+          NEXT_BRANCH_VERSION=""
+          RELEASE_BRANCH_NAME=""
+          GIT_TAG=""
+
+          if [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc([0-9]+)(-SNAPSHOT)?$ ]]; then
+            RELEASE_VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "⛔ RC finalization requires VERSION in x.y.z-rcN or x.y.z-rcN-SNAPSHOT format, current: $RAW_VERSION"
+            exit 1
+          fi
+
+          RELEASE_BRANCH_NAME="release/${RELEASE_VERSION%.*}.x"
+          NEXT_BRANCH_VERSION=$(echo "$RELEASE_VERSION" | awk -F'.' '{print $1"."$2"."$3+1}' | sed 's/[.]$//')-SNAPSHOT
+          GIT_TAG="v${RELEASE_VERSION}"
+
+          echo "RAW_VERSION=$RAW_VERSION"
+          echo "RELEASE_VERSION=$RELEASE_VERSION"
+          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME"
+          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION"
+          echo "GIT_TAG=$GIT_TAG"
+
+          echo "RAW_VERSION=$RAW_VERSION" >> $GITHUB_OUTPUT
+          echo "RELEASE_VERSION=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION" >> $GITHUB_OUTPUT
+          echo "GIT_TAG=$GIT_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create release branch
+        id: createreleasebranch
+        shell: bash
+        run: |
+          git checkout -b ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
+          git push --set-upstream origin ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+          echo "${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} branch created."
+
+      - name: Checkout release branch
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+
+      - name: Set final release version and push it to release branch
+        id: setreleaseversion
+        shell: bash
+        run: |
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.RELEASE_VERSION }}/" .env
+          echo ".env file VERSION property successfully updated to '${{ steps.prepare.outputs.RELEASE_VERSION }}'"
+
+          git commit -a -m "Bump version to ${{ steps.prepare.outputs.RELEASE_VERSION }}"
+          git push origin HEAD:refs/heads/${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+
+      - name: Create tag
+        id: createtag
+        shell: bash
+        run: |
+          git tag -a ${{ steps.prepare.outputs.GIT_TAG }} -m "Release ${{ steps.prepare.outputs.GIT_TAG }}"
+          echo "${{ steps.prepare.outputs.GIT_TAG }} tag created."
+
+      - name: Bump next BUGFIX version on release branch
+        id: bumpbranchversion
+        shell: bash
+        run: |
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}/" .env
+          echo ".env file VERSION property successfully updated ('${{ steps.prepare.outputs.RELEASE_VERSION }}' -> '${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}')"
+
+          git commit -a -m "Bump version to ${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}"
+          git push --atomic origin HEAD:refs/heads/${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} refs/tags/${{ steps.prepare.outputs.GIT_TAG }}
+
