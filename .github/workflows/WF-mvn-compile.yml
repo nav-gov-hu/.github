@@ -21,10 +21,10 @@ jobs:
     name: Compile on ${{ inputs.runs-on-os }} with JDK ${{ inputs.java-version }}
     steps:
       - name: Checkout ${{ inputs.java-version }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK ${{ inputs.java-version }}
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: ${{ inputs.java-version }}
           distribution: 'temurin'

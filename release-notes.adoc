@@ -5,6 +5,10 @@
 * new workflows:
 ** WF-mvn-docs.yml
 * Fix WF-mvn-release.yml job name
+* update components:
+** actions/checkout: v4 -> v7 (all workflows)
+** actions/setup-java: v4 -> v5 (all workflows)
+* add .gitignore
 
 == 0.1.0
 
