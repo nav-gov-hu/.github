@@ -1,0 +1,315 @@
+# Release workflow for projects using .env file for version management.
+# Supports MINOR releases from main/master, BUGFIX releases from release/x.y.x, and RC releases from main/master.
+name: (WF-plain) Plain Release
+
+on:
+  workflow_call:
+    inputs:
+      comment:
+        required: false
+        type: string
+        default: 'Start release from WEB UI'
+        description: 'Comment for release'
+      rc-release:
+        required: false
+        type: boolean
+        default: false
+        description: 'Set to true to create an RC release from main/master instead of a MINOR release.'
+
+# Prerequisites for variables:
+# Set secrets in the repository or organization settings:
+# - TECHUSER_GPG_KEY_ID: GPG key ID for git commands
+# - TECHUSER_GPG_PRIVATE_KEY: GPG private key for signing commits
+# - TECHUSER_GPG_KEY_PASSPHRASE: GPG key passphrase
+# - TECHUSER_SSH_PRIVATE_KEY: SSH private key for git commands
+# - TECHUSER_USERNAME: Git username for git commands
+# - TECHUSER_EMAIL: Git email for git commands
+# - TECHUSER_GH_TOKEN: GitHub token for GitHub API commands
+jobs:
+  plain-release:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print
+        shell: bash
+        run: |
+          echo "github.event.inputs.comment: '${{ github.event.inputs.comment }}'"
+          echo "github.ref_name: '${{ github.ref_name }}'"
+          echo "github.event.ref: '${{ github.event.ref }}'"
+          echo "github.repository: '${{ github.repository }}'"
+          echo "github.workspace: '${{ github.workspace }}'"
+          echo "inputs.rc-release: '${{ inputs.rc-release }}'"
+          echo "secrets.TECHUSER_GPG_KEY_ID: '${{ secrets.TECHUSER_GPG_KEY_ID }}'"
+          echo "secrets.TECHUSER_GPG_PRIVATE_KEY: '${{ secrets.TECHUSER_GPG_PRIVATE_KEY }}'"
+          echo "secrets.TECHUSER_GPG_KEY_PASSPHRASE: '${{ secrets.TECHUSER_GPG_KEY_PASSPHRASE }}'"
+          echo "secrets.TECHUSER_SSH_PRIVATE_KEY: '${{ secrets.TECHUSER_SSH_PRIVATE_KEY }}'"
+          echo "secrets.TECHUSER_USERNAME: '${{ secrets.TECHUSER_USERNAME }}'"
+          echo "secrets.TECHUSER_EMAIL: '${{ secrets.TECHUSER_EMAIL }}'"
+          echo "secrets.TECHUSER_GH_TOKEN: '${{ secrets.TECHUSER_GH_TOKEN }}'"
+
+      - name: Check branch and determine release type
+        id: precheck
+        shell: bash
+        run: |
+          REF_NAME="${{ github.ref_name }}"
+          VERSION_TYPE=""
+          SHOULD_BUMP_MAIN=false
+          SHOULD_CREATE_PR=false
+
+          if [[ "$REF_NAME" == "main" || "$REF_NAME" == "master" ]]; then
+            if [[ "${{ inputs.rc-release }}" == "true" ]]; then
+              VERSION_TYPE=RC
+              SHOULD_CREATE_PR=true
+            else
+              VERSION_TYPE=MINOR
+              SHOULD_BUMP_MAIN=true
+              SHOULD_CREATE_PR=true
+            fi
+          elif [[ "$REF_NAME" =~ ^release/[0-9]+\.[0-9]+\.x$ ]]; then
+            VERSION_TYPE=BUGFIX
+          else
+            echo "⛔ workflow can only be run on main/master or release/x.y.x branches!"
+            exit 1
+          fi
+
+          echo "🚀 Start $VERSION_TYPE release on '${{ github.ref_name }}'"
+          echo "VERSION_TYPE=$VERSION_TYPE"
+          echo "SHOULD_BUMP_MAIN=$SHOULD_BUMP_MAIN"
+          echo "SHOULD_CREATE_PR=$SHOULD_CREATE_PR"
+          echo "VERSION_TYPE=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          echo "SHOULD_BUMP_MAIN=$SHOULD_BUMP_MAIN" >> $GITHUB_OUTPUT
+          echo "SHOULD_CREATE_PR=$SHOULD_CREATE_PR" >> $GITHUB_OUTPUT
+
+      - name: Import GPG key
+        shell: bash
+        run: |
+          # GPG private key exported with armor (start: '-----BEGIN PGP PRIVATE KEY BLOCK-----')
+          # The whole content should be base64 encoded when stored as secret
+          echo "${{ secrets.TECHUSER_GPG_PRIVATE_KEY }}" | base64 --decode | gpg --batch --import
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          # Private SSH key in PEM format (start with: '-----BEGIN RSA PRIVATE KEY-----')
+          key: ${{ secrets.TECHUSER_SSH_PRIVATE_KEY }}
+          name: id_rsa
+          known_hosts: unnecessary
+
+      - name: Configure GIT for signed commit
+        shell: bash
+        run: |
+          git config --global user.name "${{ secrets.TECHUSER_USERNAME }}"
+          git config --global user.email "${{ secrets.TECHUSER_EMAIL }}"
+          git config --global user.signingkey "${{ secrets.TECHUSER_GPG_KEY_ID }}"
+          git config --global commit.gpgsign true
+          git config --global tag.gpgSign true
+
+      - name: Checkout ${{ github.ref_name }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ github.ref_name }}
+
+      - name: Get current version from .env and prepare release
+        id: prepare
+        shell: bash
+        run: |
+          RAW_VERSION=$(sed -rn 's/^[#[:space:]]*VERSION=([^[:space:]]+)[[:space:]]*$/\1/p' .env | head -n 1)
+          if [[ -z "$RAW_VERSION" ]]; then
+            echo "⛔ VERSION property not found in .env"
+            exit 1
+          fi
+
+          VERSION_TYPE="${{ steps.precheck.outputs.VERSION_TYPE }}"
+          CURRENT_VERSION=""
+          NEXT_BRANCH_VERSION=""
+          NEXT_MAIN_VERSION=""
+          GIT_TAG=""
+          MR_BRANCH_NAME=""
+          RELEASE_BRANCH_NAME=""
+          TARGET_BRANCH_NAME="${{ github.ref_name }}"
+          NEXT_TARGET_BRANCH_NAME="${{ github.ref_name }}"
+          PR_TITLE=""
+
+          echo "RAW_VERSION=$RAW_VERSION"
+
+          case "$VERSION_TYPE" in
+            MINOR)
+              if [[ ! "$RAW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
+                echo "⛔ MINOR release requires VERSION in x.y.z-SNAPSHOT format, current: $RAW_VERSION"
+                exit 1
+              fi
+
+              CURRENT_VERSION="${RAW_VERSION%-SNAPSHOT}"
+              RELEASE_BRANCH_NAME="release/${CURRENT_VERSION%.*}.x"
+              TARGET_BRANCH_NAME="$RELEASE_BRANCH_NAME"
+              NEXT_TARGET_BRANCH_NAME="$RELEASE_BRANCH_NAME"
+              NEXT_BRANCH_VERSION=$(echo "$CURRENT_VERSION" | awk -F'.' '{print $1"."$2"."$3+1}' | sed 's/[.]$//')-SNAPSHOT
+              NEXT_MAIN_VERSION=$(echo "$CURRENT_VERSION" | awk -F'.' '{print $1"."$2+1"."0}' | sed 's/[.]$//')-SNAPSHOT
+              MR_BRANCH_NAME="feature/v${CURRENT_VERSION}-release"
+              PR_TITLE="Bump version to ${NEXT_MAIN_VERSION}"
+              ;;
+            BUGFIX)
+              if [[ ! "$RAW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
+                echo "⛔ BUGFIX release requires VERSION in x.y.z-SNAPSHOT format, current: $RAW_VERSION"
+                exit 1
+              fi
+
+              CURRENT_VERSION="${RAW_VERSION%-SNAPSHOT}"
+              NEXT_TARGET_BRANCH_NAME="${{ github.ref_name }}"
+              NEXT_BRANCH_VERSION=$(echo "$CURRENT_VERSION" | awk -F'.' '{print $1"."$2"."$3+1}' | sed 's/[.]$//')-SNAPSHOT
+              ;;
+            RC)
+              if [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT$ ]]; then
+                RC_BASE_VERSION="${BASH_REMATCH[1]}"
+                CURRENT_VERSION="${RC_BASE_VERSION}-rc1"
+                NEXT_BRANCH_VERSION="${RC_BASE_VERSION}-rc2-SNAPSHOT"
+              elif [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc([0-9]+)-SNAPSHOT$ ]]; then
+                RC_BASE_VERSION="${BASH_REMATCH[1]}"
+                RC_NUMBER="${BASH_REMATCH[2]}"
+                CURRENT_VERSION="${RC_BASE_VERSION}-rc${RC_NUMBER}"
+                NEXT_BRANCH_VERSION="${RC_BASE_VERSION}-rc$((RC_NUMBER+1))-SNAPSHOT"
+              else
+                echo "⛔ RC release requires VERSION in x.y.z-SNAPSHOT or x.y.z-rcN-SNAPSHOT format, current: $RAW_VERSION"
+                exit 1
+              fi
+              TARGET_BRANCH_NAME="feature/create-${CURRENT_VERSION}"
+              NEXT_TARGET_BRANCH_NAME="$TARGET_BRANCH_NAME"
+              MR_BRANCH_NAME="$TARGET_BRANCH_NAME"
+              PR_TITLE="Bump version to ${NEXT_BRANCH_VERSION}"
+              ;;
+            *)
+              echo "⛔ Unsupported VERSION_TYPE '$VERSION_TYPE'"
+              exit 1
+              ;;
+          esac
+
+          GIT_TAG="v${CURRENT_VERSION}"
+
+          echo "CURRENT_VERSION=$CURRENT_VERSION"
+          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION"
+          echo "NEXT_MAIN_VERSION=$NEXT_MAIN_VERSION"
+          echo "TARGET_BRANCH_NAME=$TARGET_BRANCH_NAME"
+          echo "NEXT_TARGET_BRANCH_NAME=$NEXT_TARGET_BRANCH_NAME"
+          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME"
+          echo "GIT_TAG=$GIT_TAG"
+          echo "MR_BRANCH_NAME=$MR_BRANCH_NAME"
+          echo "PR_TITLE=$PR_TITLE"
+
+          echo "RAW_VERSION=$RAW_VERSION" >> $GITHUB_OUTPUT
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION" >> $GITHUB_OUTPUT
+          echo "NEXT_MAIN_VERSION=$NEXT_MAIN_VERSION" >> $GITHUB_OUTPUT
+          echo "TARGET_BRANCH_NAME=$TARGET_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "NEXT_TARGET_BRANCH_NAME=$NEXT_TARGET_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "GIT_TAG=$GIT_TAG" >> $GITHUB_OUTPUT
+          echo "MR_BRANCH_NAME=$MR_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_OUTPUT
+
+      - name: Create release branch
+        if: ${{ steps.precheck.outputs.VERSION_TYPE == 'MINOR' }}
+        id: createreleasebranch
+        shell: bash
+        run: |
+          git checkout -b ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
+          git push --set-upstream origin ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+          echo "${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} branch created."
+
+      - name: Create RC feature branch
+        if: ${{ steps.precheck.outputs.VERSION_TYPE == 'RC' }}
+        id: creatercbranch
+        shell: bash
+        run: |
+          git checkout -b ${{ steps.prepare.outputs.TARGET_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
+          git push --set-upstream origin ${{ steps.prepare.outputs.TARGET_BRANCH_NAME }}
+          echo "${{ steps.prepare.outputs.TARGET_BRANCH_NAME }} branch created."
+
+      - name: Checkout release branch
+        if: ${{ steps.precheck.outputs.VERSION_TYPE == 'MINOR' }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+
+      - name: Checkout RC feature branch
+        if: ${{ steps.precheck.outputs.VERSION_TYPE == 'RC' }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ steps.prepare.outputs.TARGET_BRANCH_NAME }}
+
+      - name: Set release version and push it to target branch
+        id: setreleaseversion
+        shell: bash
+        run: |
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.CURRENT_VERSION }}/" .env
+          echo ".env file VERSION property successfully updated to '${{ steps.prepare.outputs.CURRENT_VERSION }}'"
+
+          git commit -a -m "Bump version to ${{ steps.prepare.outputs.CURRENT_VERSION }}"
+          git push origin HEAD:refs/heads/${{ steps.prepare.outputs.TARGET_BRANCH_NAME }}
+
+      - name: Create tag
+        id: createtag
+        shell: bash
+        run: |
+          git tag -a ${{ steps.prepare.outputs.GIT_TAG }} -m "Release ${{ steps.prepare.outputs.GIT_TAG }}"
+          echo "${{ steps.prepare.outputs.GIT_TAG }} tag created."
+
+      - name: Bump next development version on target branch
+        id: bumpbranchversion
+        shell: bash
+        run: |
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}/" .env
+          echo ".env file VERSION property successfully updated ('${{ steps.prepare.outputs.CURRENT_VERSION }}' -> '${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}')"
+
+          git commit -a -m "Bump version to ${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}"
+          git push --atomic origin HEAD:refs/heads/${{ steps.prepare.outputs.NEXT_TARGET_BRANCH_NAME }} refs/tags/${{ steps.prepare.outputs.GIT_TAG }}
+
+      - name: Checkout main/master
+        if: ${{ steps.precheck.outputs.SHOULD_BUMP_MAIN == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ github.ref_name }}
+
+      - name: Create bump version branch
+        if: ${{ steps.precheck.outputs.SHOULD_BUMP_MAIN == 'true' }}
+        id: createBumpBranch
+        shell: bash
+        run: |
+          git checkout -b ${{ steps.prepare.outputs.MR_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
+          git push --set-upstream origin ${{ steps.prepare.outputs.MR_BRANCH_NAME }}
+          echo "${{ steps.prepare.outputs.MR_BRANCH_NAME }} branch created."
+
+      - name: Checkout bump version branch
+        if: ${{ steps.precheck.outputs.SHOULD_BUMP_MAIN == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TECHUSER_GH_TOKEN }}
+          ref: ${{ steps.prepare.outputs.MR_BRANCH_NAME }}
+
+      - name: Bump next main development version
+        if: ${{ steps.precheck.outputs.SHOULD_BUMP_MAIN == 'true' }}
+        id: bumpbranch
+        shell: bash
+        run: |
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.NEXT_MAIN_VERSION }}/" .env
+          COMMIT_MESSAGE="Bump version to ${{ steps.prepare.outputs.NEXT_MAIN_VERSION }}"
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE"
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
+
+          git add .
+          git commit -a -m "$COMMIT_MESSAGE"
+          git push origin HEAD:refs/heads/${{ steps.prepare.outputs.MR_BRANCH_NAME }}
+          echo "Next version on ${{ github.ref_name }} is ${{ steps.prepare.outputs.NEXT_MAIN_VERSION }}"
+
+      # This step creates a pull request between the feature branch and the base branch.
+      - name: Create Pull Request
+        if: ${{ steps.precheck.outputs.SHOULD_CREATE_PR == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TECHUSER_GH_TOKEN }}
+        run: |
+          gh pr create --base ${{ github.ref_name }} --fill-verbose --title '${{ steps.prepare.outputs.PR_TITLE }}'
