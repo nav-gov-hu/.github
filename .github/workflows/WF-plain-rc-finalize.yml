@@ -1,4 +1,4 @@
-# Finalizes an RC line into a release branch and prepares the release branch for bugfix development.
+# Converts an RC version on main/master into a non-RC version through a bump branch and PR.
 name: (WF-plain) RC Finalize
 
 on:
@@ -8,7 +8,7 @@ on:
         required: false
         type: string
         default: 'Finalize RC release from WEB UI'
-        description: 'Comment for release finalization'
+        description: 'Comment for RC finalization'
 
 # Prerequisites for variables:
 # Set secrets in the repository or organization settings:
@@ -41,14 +41,14 @@ jobs:
           echo "secrets.TECHUSER_EMAIL: '${{ secrets.TECHUSER_EMAIL }}'"
           echo "secrets.TECHUSER_GH_TOKEN: '${{ secrets.TECHUSER_GH_TOKEN }}'"
 
-      - name: Check branch (workflow can run only on rc/* branches)
+      - name: Check branch (workflow can run only on main/master)
         id: precheck
         shell: bash
         run: |
-          if [[ "${{ github.ref_name }}" == rc/* ]]; then
+          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
             echo "🚀 Start RC finalization on '${{ github.ref_name }}'"
           else
-            echo "⛔ RC finalization can only be run on an rc/* branch!"
+            echo "⛔ RC finalization can only be run on main/master branch!"
             exit 1
           fi
 
@@ -82,7 +82,7 @@ jobs:
           token: ${{ secrets.TECHUSER_GH_TOKEN }}
           ref: ${{ github.ref_name }}
 
-      - name: Prepare final release from RC branch
+      - name: Prepare RC finalization
         id: prepare
         shell: bash
         run: |
@@ -92,72 +92,64 @@ jobs:
             exit 1
           fi
 
-          RELEASE_VERSION=""
-          NEXT_BRANCH_VERSION=""
-          RELEASE_BRANCH_NAME=""
-          GIT_TAG=""
+          TARGET_VERSION=""
+          MR_BRANCH_NAME=""
+          PR_TITLE=""
 
-          if [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc([0-9]+)(-SNAPSHOT)?$ ]]; then
-            RELEASE_VERSION="${BASH_REMATCH[1]}"
+          if [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc([0-9]+)-SNAPSHOT$ ]]; then
+            TARGET_VERSION="${BASH_REMATCH[1]}-SNAPSHOT"
+          elif [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc([0-9]+)$ ]]; then
+            TARGET_VERSION="${BASH_REMATCH[1]}"
           else
-            echo "⛔ RC finalization requires VERSION in x.y.z-rcN or x.y.z-rcN-SNAPSHOT format, current: $RAW_VERSION"
+            echo "⛔ RC finalization requires VERSION in x.y.z-rcN-SNAPSHOT or x.y.z-rcN format, current: $RAW_VERSION"
             exit 1
           fi
 
-          RELEASE_BRANCH_NAME="release/${RELEASE_VERSION%.*}.x"
-          NEXT_BRANCH_VERSION=$(echo "$RELEASE_VERSION" | awk -F'.' '{print $1"."$2"."$3+1}' | sed 's/[.]$//')-SNAPSHOT
-          GIT_TAG="v${RELEASE_VERSION}"
+          MR_BRANCH_NAME="feature/remove-rc-${TARGET_VERSION}"
+          PR_TITLE="Bump version to ${TARGET_VERSION}"
 
           echo "RAW_VERSION=$RAW_VERSION"
-          echo "RELEASE_VERSION=$RELEASE_VERSION"
-          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME"
-          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION"
-          echo "GIT_TAG=$GIT_TAG"
+          echo "TARGET_VERSION=$TARGET_VERSION"
+          echo "MR_BRANCH_NAME=$MR_BRANCH_NAME"
+          echo "PR_TITLE=$PR_TITLE"
 
           echo "RAW_VERSION=$RAW_VERSION" >> $GITHUB_OUTPUT
-          echo "RELEASE_VERSION=$RELEASE_VERSION" >> $GITHUB_OUTPUT
-          echo "RELEASE_BRANCH_NAME=$RELEASE_BRANCH_NAME" >> $GITHUB_OUTPUT
-          echo "NEXT_BRANCH_VERSION=$NEXT_BRANCH_VERSION" >> $GITHUB_OUTPUT
-          echo "GIT_TAG=$GIT_TAG" >> $GITHUB_OUTPUT
+          echo "TARGET_VERSION=$TARGET_VERSION" >> $GITHUB_OUTPUT
+          echo "MR_BRANCH_NAME=$MR_BRANCH_NAME" >> $GITHUB_OUTPUT
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_OUTPUT
 
-      - name: Create release branch
-        id: createreleasebranch
+      - name: Create bump version branch
+        id: createBumpBranch
         shell: bash
         run: |
-          git checkout -b ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
-          git push --set-upstream origin ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
-          echo "${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} branch created."
+          git checkout -b ${{ steps.prepare.outputs.MR_BRANCH_NAME }} refs/remotes/origin/${{ github.ref_name }}
+          git push --set-upstream origin ${{ steps.prepare.outputs.MR_BRANCH_NAME }}
+          echo "${{ steps.prepare.outputs.MR_BRANCH_NAME }} branch created."
 
-      - name: Checkout release branch
+      - name: Checkout bump version branch
         uses: actions/checkout@v7
         with:
           token: ${{ secrets.TECHUSER_GH_TOKEN }}
-          ref: ${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+          ref: ${{ steps.prepare.outputs.MR_BRANCH_NAME }}
 
-      - name: Set final release version and push it to release branch
-        id: setreleaseversion
+      - name: Remove RC suffix from version
+        id: bumpbranch
         shell: bash
         run: |
-          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.RELEASE_VERSION }}/" .env
-          echo ".env file VERSION property successfully updated to '${{ steps.prepare.outputs.RELEASE_VERSION }}'"
+          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.TARGET_VERSION }}/" .env
+          COMMIT_MESSAGE="Bump version to ${{ steps.prepare.outputs.TARGET_VERSION }}"
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE"
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
 
-          git commit -a -m "Bump version to ${{ steps.prepare.outputs.RELEASE_VERSION }}"
-          git push origin HEAD:refs/heads/${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }}
+          git add .
+          git commit -a -m "$COMMIT_MESSAGE"
+          git push origin HEAD:refs/heads/${{ steps.prepare.outputs.MR_BRANCH_NAME }}
+          echo "Next version on ${{ github.ref_name }} is ${{ steps.prepare.outputs.TARGET_VERSION }}"
 
-      - name: Create tag
-        id: createtag
+      # This step creates a pull request between the feature branch and the base branch.
+      - name: Create Pull Request
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TECHUSER_GH_TOKEN }}
         run: |
-          git tag -a ${{ steps.prepare.outputs.GIT_TAG }} -m "Release ${{ steps.prepare.outputs.GIT_TAG }}"
-          echo "${{ steps.prepare.outputs.GIT_TAG }} tag created."
-
-      - name: Bump next BUGFIX version on release branch
-        id: bumpbranchversion
-        shell: bash
-        run: |
-          sed -i -r "s/^[#]*\s*VERSION=.*/VERSION=${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}/" .env
-          echo ".env file VERSION property successfully updated ('${{ steps.prepare.outputs.RELEASE_VERSION }}' -> '${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}')"
-
-          git commit -a -m "Bump version to ${{ steps.prepare.outputs.NEXT_BRANCH_VERSION }}"
-          git push --atomic origin HEAD:refs/heads/${{ steps.prepare.outputs.RELEASE_BRANCH_NAME }} refs/tags/${{ steps.prepare.outputs.GIT_TAG }}
-
+          gh pr create --base ${{ github.ref_name }} --fill-verbose --title '${{ steps.prepare.outputs.PR_TITLE }}'
