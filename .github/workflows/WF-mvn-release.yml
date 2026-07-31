@@ -149,22 +149,45 @@ jobs:
         if: ${{ steps.precheck.outputs.VERSION_TYPE != 'RC' }}
         shell: bash
         run: |
-          mvn -B ${{ inputs.maven-cmd-customization }} release:prepare -DdryRun=true
-          if [[ "${{ steps.precheck.outputs.VERSION_TYPE }}" == "MINOR" ]]; then
+          VERSION_TYPE="${{ steps.precheck.outputs.VERSION_TYPE }}"
+          RAW_VERSION=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version | tail -n 1)
+
+          RELEASE_VERSION=""
+          NEXT_MAIN_VERSION=""
+          SCM_TAG=""
+
+          if [[ "$VERSION_TYPE" == "MINOR" ]]; then
+            if [[ "$RAW_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-rc\.[0-9]+)?-SNAPSHOT$ ]]; then
+              RELEASE_VERSION="${BASH_REMATCH[1]}"
+            else
+              echo "⛔ MINOR release requires version format x.y.z-SNAPSHOT or x.y.z-rc.n-SNAPSHOT, current: $RAW_VERSION"
+              exit 1
+            fi
+
+            NEXT_MAIN_VERSION=$(echo "$RELEASE_VERSION" | awk -F'.' '{print $1"."$2+1"."0}' | sed 's/[.]$//')-SNAPSHOT
+            mvn -B ${{ inputs.maven-cmd-customization }} release:prepare -DdryRun=true -DreleaseVersion=$RELEASE_VERSION
             SCM_TAG=`cat release.properties | grep -w "scm.tag" | cut -d'=' -f2`
-            echo "SCM_TAG=${SCM_TAG}" 
+            echo "SCM_TAG=${SCM_TAG}"
             echo "SCM_TAG=${SCM_TAG}" >> $GITHUB_OUTPUT
+            echo "RELEASE_VERSION=${RELEASE_VERSION}"
+            echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+            echo "NEXT_MAIN_VERSION=${NEXT_MAIN_VERSION}"
+            echo "NEXT_MAIN_VERSION=${NEXT_MAIN_VERSION}" >> $GITHUB_OUTPUT
+          else
+            mvn -B ${{ inputs.maven-cmd-customization }} release:prepare -DdryRun=true
           fi
+
           mvn -B ${{ inputs.maven-cmd-customization }} release:clean --file pom.xml
-          if [[ "${{ steps.precheck.outputs.VERSION_TYPE }}" == "MINOR" ]]; then
-            RELEASE_BRANCH_NAME=release/${SCM_TAG%.*}.x
+
+          if [[ "$VERSION_TYPE" == "MINOR" ]]; then
+            RELEASE_BRANCH_NAME=release/${RELEASE_VERSION%.*}.x
             echo "RELEASE_BRANCH_NAME=${RELEASE_BRANCH_NAME}"
             echo "RELEASE_BRANCH_NAME=${RELEASE_BRANCH_NAME}" >> $GITHUB_OUTPUT
             echo new release branch name is ${RELEASE_BRANCH_NAME}
-            MR_BRANCH_NAME=feature/${SCM_TAG}-release
+            MR_BRANCH_NAME=feature/${RELEASE_VERSION}-release
             echo "MR_BRANCH_NAME=${MR_BRANCH_NAME}"
             echo "MR_BRANCH_NAME=${MR_BRANCH_NAME}" >> $GITHUB_OUTPUT
-            PR_TITLE="Bump version to next main snapshot"
+            PR_TITLE="Bump version to ${NEXT_MAIN_VERSION}"
             echo "PR_TITLE=${PR_TITLE}"
             echo "PR_TITLE=${PR_TITLE}" >> $GITHUB_OUTPUT
           fi
@@ -238,7 +261,11 @@ jobs:
         if: ${{ steps.precheck.outputs.VERSION_TYPE != 'RC' }}
         shell: bash
         run: |
+          if [[ "${{ steps.precheck.outputs.VERSION_TYPE }}" == "MINOR" ]]; then
+            mvn -B ${{ inputs.maven-cmd-customization }} release:prepare -DreleaseVersion=${{ steps.prepare.outputs.RELEASE_VERSION }}
+          else
             mvn -B ${{ inputs.maven-cmd-customization }} release:prepare
+          fi
         env:
           MAVEN_GPG_PASSPHRASE: '${{ secrets.TECHUSER_GPG_KEY_PASSPHRASE }}'
 
@@ -289,9 +316,8 @@ jobs:
         id: bumpbranch
         shell: bash
         run: |
-          NEXT_MASTER_VERSION=$(echo  ${{ steps.prepare.outputs.SCM_TAG }} |  awk -F'.' '{print $1"."$2+1"."0}' |  sed s/[.]$//)
-          TARGET_BRANCH_NEXT_VERSION=$(echo $NEXT_MASTER_VERSION | rev | cut -d '-' -f1 | rev)-SNAPSHOT
-           mvn -B release:update-versions -DdevelopmentVersion=$TARGET_BRANCH_NEXT_VERSION
+          TARGET_BRANCH_NEXT_VERSION=${{ steps.prepare.outputs.NEXT_MAIN_VERSION }}
+          mvn -B release:update-versions -DdevelopmentVersion=$TARGET_BRANCH_NEXT_VERSION
           COMMIT_MESSAGE="Bump version to $TARGET_BRANCH_NEXT_VERSION"
           echo "COMMIT_MESSAGE=$COMMIT_MESSAGE"
           echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_OUTPUT
