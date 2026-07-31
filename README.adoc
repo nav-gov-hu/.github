@@ -1,3 +1,220 @@
 = .github CI/CD repository
 
-Common Github CI/CD workflows for NAV projects.
+This repository contains shared GitHub Actions CI/CD workflows maintained by NAV.
+
+NAV is the National Tax-and Customs Administration of Hungary.
+These reusable workflows support the GitHub organization-level delivery and release processes, so projects in the organization can adopt a consistent CI/CD setup with minimal duplication.
+
+== How to consume these workflows in your project
+
+. In your project repository, create a workflow file under `.github/workflows/`.
+. Trigger it with your preferred event (`push`, `pull_request`, `workflow_dispatch`, and so on).
+. Call one of the reusable workflows from this repository with `jobs.<job_id>.uses`.
+. Pass workflow `with` inputs when needed.
+. Provide required secrets (recommended: configure organization secrets, then use `secrets: inherit`).
+
+Example skeleton:
+
+[source,yaml]
+----
+name: Use NAV reusable workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-shared-workflow:
+    uses: NAV/.github/.github/workflows/WF-mvn-compile.yml@v0.2.0
+    with:
+      java-version: '21'
+    secrets: inherit
+----
+
+NOTE: Replace `v0.2.0` with the release tag (or pinned commit SHA) you want to use.
+
+== Shared secrets used by release/deploy workflows
+
+Depending on the selected workflow, configure these secrets at repository or organization level:
+
+* `TECHUSER_GPG_KEY_ID`
+* `TECHUSER_GPG_PRIVATE_KEY`
+* `TECHUSER_GPG_KEY_PASSPHRASE`
+* `TECHUSER_SSH_PRIVATE_KEY`
+* `TECHUSER_USERNAME`
+* `TECHUSER_EMAIL`
+* `TECHUSER_GH_TOKEN`
+* `MAVEN_CENTRAL_USER_USERNAME`
+* `MAVEN_CENTRAL_USER_PASSWORD`
+
+== Available reusable workflows and integration examples
+
+=== `WF-mvn-compile.yml`
+
+Compiles a Maven project (`mvn -B package --file pom.xml`) on a configurable OS and JDK.
+
+[source,yaml]
+----
+name: Compile
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  compile:
+    uses: NAV/.github/.github/workflows/WF-mvn-compile.yml@v0.2.0
+    with:
+      runs-on-os: ubuntu-latest
+      java-version: '21'
+----
+
+What happens:
+
+* Checks out your source code.
+* Sets up the selected JDK and Maven cache.
+* Builds the project with Maven package goal.
+
+=== `WF-mvn-deploy-SNAPSHOT.yml`
+
+Builds the project and deploys SNAPSHOT artifacts with a configurable Maven deploy command.
+
+[source,yaml]
+----
+name: Deploy Snapshot
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  deploy-snapshot:
+    uses: NAV/.github/.github/workflows/WF-mvn-deploy-SNAPSHOT.yml@v0.2.0
+    with:
+      java-version: '21'
+      deploy-maven-cmd: 'mvn -B deploy'
+    secrets: inherit
+----
+
+What happens:
+
+* Builds the project with Maven.
+* Configures Maven server credentials from secrets.
+* Publishes SNAPSHOT artifacts to the configured Maven repository.
+
+=== `WF-mvn-docs.yml`
+
+Builds the project and publishes AsciiDoc documentation (including PDF) from `docs/`.
+
+[source,yaml]
+----
+name: Publish Docs
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  docs:
+    uses: NAV/.github/.github/workflows/WF-mvn-docs.yml@v0.2.0
+    with:
+      runs-on-os: ubuntu-latest
+      java-version: '21'
+----
+
+What happens:
+
+* Builds the Maven project.
+* Reads project version from `pom.xml`.
+* Runs Asciidoctor and publishes generated documentation.
+
+=== `WF-mvn-release.yml`
+
+Performs Maven-based release automation for `MINOR`, `BUGFIX`, and `RC` release types.
+
+[source,yaml]
+----
+name: Maven Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc-release:
+        description: 'Set true for RC release'
+        required: true
+        default: 'false'
+
+jobs:
+  release:
+    uses: NAV/.github/.github/workflows/WF-mvn-release.yml@v0.2.0
+    with:
+      rc-release: ${{ github.event.inputs.rc-release == 'true' }}
+      java-version: '21'
+      java-distribution: temurin
+      maven-settings-xml-server-id: central
+      maven-cmd-customization: ''
+    secrets: inherit
+----
+
+What happens:
+
+* Validates branch strategy (`main`/`master` or `release/x.y.x`).
+* Creates release/feature branches when needed.
+* Runs Maven `release:prepare` and `release:perform`.
+* Pushes tags/branches and creates PRs for version bumps.
+
+=== `WF-plain-release.yml`
+
+Release automation for non-Maven versioning based on `VERSION=` in `.env`.
+
+[source,yaml]
+----
+name: Plain Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc-release:
+        description: 'Set true for RC release'
+        required: true
+        default: 'false'
+
+jobs:
+  release:
+    uses: NAV/.github/.github/workflows/WF-plain-release.yml@v0.2.0
+    with:
+      rc-release: ${{ github.event.inputs.rc-release == 'true' }}
+    secrets: inherit
+----
+
+What happens:
+
+* Reads and validates `VERSION` from `.env`.
+* Handles MINOR/BUGFIX/RC release rules from branch context.
+* Commits release version, creates tags, bumps next development version.
+* Opens PRs for follow-up version changes.
+
+=== `WF-plain-rc-finalize.yml`
+
+Finalizes RC versioning for plain projects by removing the RC suffix on `main`/`master`.
+
+[source,yaml]
+----
+name: Finalize RC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  finalize-rc:
+    uses: NAV/.github/.github/workflows/WF-plain-rc-finalize.yml@v0.2.0
+    secrets: inherit
+----
+
+What happens:
+
+* Ensures execution only on `main`/`master`.
+* Reads `.env` and converts `x.y.z-rcN(-SNAPSHOT)` to final target format.
+* Creates a branch with updated `VERSION`, pushes commit, and opens a PR.
