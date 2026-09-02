@@ -1,0 +1,220 @@
+= .github CI/CD repository
+
+Ez a repository a NAV által karbantartott, megosztott GitHub Actions CI/CD workflow-kat tartalmazza.
+
+A NAV a Nemzeti Adó- és Vámhivatal.
+Ezek az újrafelhasználható workflow-k a GitHub szervezeti szintű delivery és release folyamatokat támogatják, hogy a szervezeten belüli projektek minimális duplikációval, egységes CI/CD kialakítást tudjanak használni.
+
+== Hogyan használd ezeket a workflow-kat a saját projektedben
+
+. A projekt repositorydban hozz létre egy workflow fájlt a `.github/workflows/` alatt.
+. Add meg a kívánt triggert (`push`, `pull_request`, `workflow_dispatch`, stb.).
+. Hívd meg ennek a repositorynak valamelyik újrafelhasználható workflow-ját a `jobs.<job_id>.uses` mezővel.
+. Add át a szükséges `with` inputokat.
+. Add meg a kötelező secret-eket (ajánlott: szervezeti secret-ek beállítása, majd `secrets: inherit`).
+
+Általános példa:
+
+[source,yaml]
+----
+name: NAV újrafelhasználható workflow használata
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-shared-workflow:
+    uses: NAV/.github/.github/workflows/WF-mvn-compile.yml@v0.2.0
+    with:
+      java-version: '21'
+    secrets: inherit
+----
+
+NOTE: A `v0.2.0` helyére azt a release taget (vagy pinelt commit SHA-t) tedd, amit használni szeretnél.
+
+== Release/deploy workflow-k által használt közös secret-ek
+
+Workflow-tól függően ezeket a secret-eket kell repository vagy szervezeti szinten beállítani:
+
+* `TECHUSER_GPG_KEY_ID`
+* `TECHUSER_GPG_PRIVATE_KEY`
+* `TECHUSER_GPG_KEY_PASSPHRASE`
+* `TECHUSER_SSH_PRIVATE_KEY`
+* `TECHUSER_USERNAME`
+* `TECHUSER_EMAIL`
+* `TECHUSER_GH_TOKEN`
+* `MAVEN_CENTRAL_USER_USERNAME`
+* `MAVEN_CENTRAL_USER_PASSWORD`
+
+== Elérhető újrafelhasználható workflow-k és bekötési példák
+
+=== `WF-mvn-compile.yml`
+
+Maven projekt fordítása (`mvn -B package --file pom.xml`) konfigurálható OS-en és JDK-val.
+
+[source,yaml]
+----
+name: Compile
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  compile:
+    uses: NAV/.github/.github/workflows/WF-mvn-compile.yml@v0.2.0
+    with:
+      runs-on-os: ubuntu-latest
+      java-version: '21'
+----
+
+Mi történik:
+
+* Kicheckoutolja a forráskódot.
+* Beállítja a kiválasztott JDK-t és a Maven cache-t.
+* Lefuttatja a Maven package buildet.
+
+=== `WF-mvn-deploy-SNAPSHOT.yml`
+
+Buildeli a projektet és deployolja a SNAPSHOT artifactokat konfigurálható Maven deploy paranccsal.
+
+[source,yaml]
+----
+name: Deploy Snapshot
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  deploy-snapshot:
+    uses: NAV/.github/.github/workflows/WF-mvn-deploy-SNAPSHOT.yml@v0.2.0
+    with:
+      java-version: '21'
+      deploy-maven-cmd: 'mvn -B deploy'
+    secrets: inherit
+----
+
+Mi történik:
+
+* Buildeli a projektet Mavennel.
+* A Maven repository hitelesítést secret-ekből konfigurálja.
+* Publikálja a SNAPSHOT artifactokat a beállított Maven tárolóba.
+
+=== `WF-mvn-docs.yml`
+
+Buildeli a projektet és publikálja az AsciiDoc dokumentációt (PDF-fel együtt) a `docs/` mappából.
+
+[source,yaml]
+----
+name: Publish Docs
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  docs:
+    uses: NAV/.github/.github/workflows/WF-mvn-docs.yml@v0.2.0
+    with:
+      runs-on-os: ubuntu-latest
+      java-version: '21'
+----
+
+Mi történik:
+
+* Buildeli a Maven projektet.
+* Kinyeri a projektverziót a `pom.xml` fájlból.
+* Lefuttatja az Asciidoctort és publikálja a generált dokumentációt.
+
+=== `WF-mvn-release.yml`
+
+Maven alapú release automatizálás `MINOR`, `BUGFIX` és `RC` release típusokra.
+
+[source,yaml]
+----
+name: Maven Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc-release:
+        description: 'Set true for RC release'
+        required: true
+        default: 'false'
+
+jobs:
+  release:
+    uses: NAV/.github/.github/workflows/WF-mvn-release.yml@v0.2.0
+    with:
+      rc-release: ${{ github.event.inputs.rc-release == 'true' }}
+      java-version: '21'
+      java-distribution: temurin
+      maven-settings-xml-server-id: central
+      maven-cmd-customization: ''
+    secrets: inherit
+----
+
+Mi történik:
+
+* Ellenőrzi az ágstratégiát (`main`/`master` vagy `release/x.y.x`).
+* Szükség esetén release/feature ágakat hoz létre.
+* Lefuttatja a Maven `release:prepare` és `release:perform` lépéseket.
+* Pusholja a tageket/ágakat és PR-eket nyit a verzióemelésekhez.
+
+=== `WF-plain-release.yml`
+
+Release automatizálás nem-Mavenes verziókezeléshez, a `.env` fájlbeli `VERSION=` alapján.
+
+[source,yaml]
+----
+name: Plain Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc-release:
+        description: 'Set true for RC release'
+        required: true
+        default: 'false'
+
+jobs:
+  release:
+    uses: NAV/.github/.github/workflows/WF-plain-release.yml@v0.2.0
+    with:
+      rc-release: ${{ github.event.inputs.rc-release == 'true' }}
+    secrets: inherit
+----
+
+Mi történik:
+
+* Beolvassa és validálja a `.env` `VERSION` értékét.
+* Ágkontextus alapján kezeli a MINOR/BUGFIX/RC szabályokat.
+* Commitolja a release verziót, taget készít, majd bumpolja a következő fejlesztői verziót.
+* PR-eket nyit az utókövető verziófrissítésekhez.
+
+=== `WF-plain-rc-finalize.yml`
+
+RC verziók véglegesítése plain projektekhez az RC utótag eltávolításával `main`/`master` ágon.
+
+[source,yaml]
+----
+name: Finalize RC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  finalize-rc:
+    uses: NAV/.github/.github/workflows/WF-plain-rc-finalize.yml@v0.2.0
+    secrets: inherit
+----
+
+Mi történik:
+
+* Biztosítja, hogy csak `main`/`master` ágon fusson.
+* Beolvassa a `.env` fájlt, és átalakítja az `x.y.z-rcN(-SNAPSHOT)` formátumot végleges cél formátumra.
+* Létrehoz egy ágat frissített `VERSION` értékkel, pusholja a commitot, majd PR-t nyit.
