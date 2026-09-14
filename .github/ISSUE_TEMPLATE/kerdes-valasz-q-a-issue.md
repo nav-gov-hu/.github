@@ -1,6 +1,6 @@
 ---
 name: Kérdés-válasz / Q&A issue
-about: ''
+about: 'Általános célú kérdés-válasz / General purpose Q&A'
 title: "[Q&A]"
 labels: question
 assignees: ''
