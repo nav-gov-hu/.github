@@ -1,6 +1,6 @@
 ---
 name: Fejlesztési kérés / Feature request
-about: ''
+about: 'Új fejlesztés kérése / Requesting new feature'
 title: "[FEATURE]"
 labels: enhancement
 assignees: ''

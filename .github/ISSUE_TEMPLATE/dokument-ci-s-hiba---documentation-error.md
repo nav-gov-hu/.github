@@ -1,6 +1,6 @@
 ---
 name: Dokumentációs hiba / Documentation error
-about: ''
+about: 'Dokumentációs hibák jelzése / Highlighting documentation errors'
 title: "[DOC]"
 labels: invalid
 assignees: ''
