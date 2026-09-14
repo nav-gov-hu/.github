@@ -1,3 +1,3 @@
-= .github CI/CD repository
+= NTCA enterprise default .github repository
 
-Common Github CI/CD workflows for NAV projects.
+Common repository for CI/CD workflows and community health files for all NTCA projects.
